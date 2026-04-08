@@ -16,6 +16,8 @@ def load_data():
         warehouse=st.secrets["snowflake"]["warehouse"],
         database=st.secrets["snowflake"]["database"],
         schema=st.secrets["snowflake"]["schema"],
+        authenticator="snowflake",
+        login_timeout=30,
     )
     cur = conn.cursor()
     cur.execute("SELECT * FROM unified_ads")
