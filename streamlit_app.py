@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import numpy as np
 
 st.set_page_config(page_title="Cross-Channel Ad Performance Dashboard", layout="wide")
 st.title("Cross-Channel Ad Performance Dashboard")
@@ -239,23 +240,100 @@ st.divider()
 
 # ── Efficiency Scatter Plot ──────────────────────────────────
 st.subheader("Campaign Efficiency: CPC vs Conversion Rate")
+st.caption("Green = above the trend line (outperforming). Orange = below (underperforming). Line of best fit shows the average relationship between CPC and conversion rate.")
+
 scatter_data = camp[camp["total_clicks"] > 0].copy()
-st.altair_chart(
-    alt.Chart(scatter_data)
-    .mark_circle()
+
+# Compute linear regression: conversion_rate ~ cpc
+x_vals = scatter_data["cpc"].values
+y_vals = scatter_data["conversion_rate"].values
+slope, intercept = np.polyfit(x_vals, y_vals, 1)
+
+# Label each campaign as above or below the regression line
+scatter_data["predicted"] = slope * scatter_data["cpc"] + intercept
+scatter_data["performance"] = np.where(
+    scatter_data["conversion_rate"] >= scatter_data["predicted"],
+    "Above trend (Good)",
+    "Below trend (Poor)"
+)
+
+# Build background shading data along x-axis
+x_min = x_vals.min() * 0.85
+x_max = x_vals.max() * 1.15
+y_min = 0
+y_max = y_vals.max() * 1.2
+x_range = np.linspace(x_min, x_max, 200)
+reg_y = np.clip(slope * x_range + intercept, y_min, y_max)
+
+bg_df = pd.DataFrame({
+    "cpc": x_range,
+    "reg_y": reg_y,
+    "y_max": y_max,
+    "y_min": y_min,
+})
+
+# Green shading above regression line
+green_bg = (
+    alt.Chart(bg_df)
+    .mark_area(opacity=0.12, color="#2ecc71")
     .encode(
-        x=alt.X("cpc:Q", title="Cost per Click ($)"),
-        y=alt.Y("conversion_rate:Q", title="Conversion Rate (%)"),
-        color=alt.Color("SOURCE_PLATFORM:N", scale=color_scale, title="Platform"),
-        size=alt.Size("total_spend:Q", title="Total Spend", scale=alt.Scale(range=[50, 500])),
+        x=alt.X("cpc:Q", scale=alt.Scale(domain=[x_min, x_max])),
+        y=alt.Y("reg_y:Q", scale=alt.Scale(domain=[y_min, y_max])),
+        y2=alt.Y2("y_max:Q"),
+    )
+)
+
+# Orange shading below regression line
+orange_bg = (
+    alt.Chart(bg_df)
+    .mark_area(opacity=0.12, color="#e67e22")
+    .encode(
+        x=alt.X("cpc:Q"),
+        y=alt.Y("y_min:Q"),
+        y2=alt.Y2("reg_y:Q"),
+    )
+)
+
+# Regression line
+reg_line = (
+    alt.Chart(bg_df)
+    .mark_line(color="#555555", strokeDash=[4, 4], strokeWidth=1.5)
+    .encode(
+        x=alt.X("cpc:Q"),
+        y=alt.Y("reg_y:Q"),
+    )
+)
+
+# Scatter points coloured by above/below
+perf_color_scale = alt.Scale(
+    domain=["Above trend (Good)", "Below trend (Poor)"],
+    range=["#27ae60", "#e67e22"]
+)
+
+points = (
+    alt.Chart(scatter_data)
+    .mark_circle(stroke="white", strokeWidth=0.8)
+    .encode(
+        x=alt.X("cpc:Q", title="Cost per Click ($)",
+                scale=alt.Scale(domain=[x_min, x_max])),
+        y=alt.Y("conversion_rate:Q", title="Conversion Rate (%)",
+                scale=alt.Scale(domain=[y_min, y_max])),
+        color=alt.Color("performance:N", scale=perf_color_scale, title="vs. Trend"),
+        size=alt.Size("total_spend:Q", title="Total Spend",
+                      scale=alt.Scale(range=[60, 500])),
         tooltip=[
             alt.Tooltip("CAMPAIGN_NAME:N", title="Campaign"),
             alt.Tooltip("SOURCE_PLATFORM:N", title="Platform"),
             alt.Tooltip("cpc:Q", title="CPC", format="$.2f"),
-            alt.Tooltip("conversion_rate:Q", title="Conv Rate", format=".2f"),
+            alt.Tooltip("conversion_rate:Q", title="Conv Rate (%)", format=".2f"),
+            alt.Tooltip("predicted:Q", title="Trend Line (%)", format=".2f"),
             alt.Tooltip("total_spend:Q", title="Spend", format="$,.0f"),
+            alt.Tooltip("performance:N", title="Performance"),
         ],
     )
-    .properties(height=400),
+)
+
+st.altair_chart(
+    (green_bg + orange_bg + reg_line + points).properties(height=420),
     use_container_width=True,
 )
