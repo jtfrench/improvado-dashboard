@@ -137,12 +137,23 @@ with col_right:
 
 st.divider()
 
-# ── Daily Spend Trend ────────────────────────────────────────
+# ── Daily Spend Trend + Anomaly Detection ────────────────────
 st.subheader("Daily Spend Trend")
+
 daily = filtered.groupby(["DATE", "SOURCE_PLATFORM"], as_index=False).agg(
     daily_spend=("SPEND", "sum")
 )
-st.altair_chart(
+
+# Z-score anomaly detection per platform (flag |z| > 2)
+daily["z_score"] = daily.groupby("SOURCE_PLATFORM")["daily_spend"].transform(
+    lambda x: (x - x.mean()) / x.std() if x.std() > 0 else 0
+)
+anomalies = daily[daily["z_score"].abs() > 2].copy()
+anomalies["anomaly_label"] = anomalies.apply(
+    lambda r: f"{r['SOURCE_PLATFORM']}: ${r['daily_spend']:,.0f} (z={r['z_score']:.1f})", axis=1
+)
+
+line = (
     alt.Chart(daily)
     .mark_line(point=True)
     .encode(
@@ -150,9 +161,41 @@ st.altair_chart(
         y=alt.Y("daily_spend:Q", title="Spend ($)"),
         color=alt.Color("SOURCE_PLATFORM:N", scale=color_scale, title="Platform"),
     )
-    .properties(height=350),
+)
+
+anomaly_markers = (
+    alt.Chart(anomalies)
+    .mark_circle(size=120, color="red", opacity=0.85)
+    .encode(
+        x=alt.X("DATE:T"),
+        y=alt.Y("daily_spend:Q"),
+        tooltip=[
+            alt.Tooltip("DATE:T", title="Date"),
+            alt.Tooltip("SOURCE_PLATFORM:N", title="Platform"),
+            alt.Tooltip("daily_spend:Q", title="Spend ($)", format="$,.2f"),
+            alt.Tooltip("z_score:Q", title="Z-Score", format=".2f"),
+        ],
+    )
+)
+
+st.altair_chart(
+    (line + anomaly_markers).properties(height=350),
     use_container_width=True,
 )
+
+# Anomaly callout
+if not anomalies.empty:
+    with st.expander(f"⚠️ {len(anomalies)} spend anomal{'y' if len(anomalies)==1 else 'ies'} detected"):
+        st.caption("Days where daily spend deviated more than 2 standard deviations from that platform's average.")
+        for _, row in anomalies.sort_values("DATE").iterrows():
+            direction = "spike" if row["z_score"] > 0 else "drop"
+            st.markdown(
+                f"**{row['DATE'].strftime('%b %d')}** — {row['SOURCE_PLATFORM']} "
+                f"spend {direction}: **${row['daily_spend']:,.0f}** "
+                f"(z = {row['z_score']:.1f})"
+            )
+else:
+    st.caption("No significant spend anomalies detected in the selected date range.")
 
 st.divider()
 
