@@ -2,9 +2,6 @@
 .streamlit/secrets.toml
 secrets_template.toml
 
-# Data files (already in Snowflake)
-*.csv
-
 # Python
 __pycache__/
 *.pyc

@@ -1,32 +1,55 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-import snowflake.connector
 
 st.set_page_config(page_title="Cross-Channel Ad Performance Dashboard", layout="wide")
 st.title("Cross-Channel Ad Performance Dashboard")
 
 
-@st.cache_data(ttl=600)
+@st.cache_data
 def load_data():
-    conn = snowflake.connector.connect(
-        account=st.secrets["snowflake"]["account"],
-        user=st.secrets["snowflake"]["user"],
-        password=st.secrets["snowflake"]["password"],
-        warehouse=st.secrets["snowflake"]["warehouse"],
-        database=st.secrets["snowflake"]["database"],
-        schema=st.secrets["snowflake"]["schema"],
-        authenticator="snowflake",
-        login_timeout=30,
+    # Load each platform's raw CSV
+    fb = pd.read_csv("01_facebook_ads.csv")
+    goog = pd.read_csv("02_google_ads.csv")
+    tt = pd.read_csv("03_tiktok_ads.csv")
+
+    # Normalise column names to uppercase to match unified schema
+    fb.columns = fb.columns.str.upper()
+    goog.columns = goog.columns.str.upper()
+    tt.columns = tt.columns.str.upper()
+
+    # ── Facebook ──────────────────────────────────────────────
+    fb = fb.rename(columns={"AD_SET_ID": "AD_GROUP_ID", "AD_SET_NAME": "AD_GROUP_NAME"})
+    fb["SOURCE_PLATFORM"] = "Facebook"
+    fb["SPEND"] = fb["SPEND"]  # already named SPEND
+
+    # ── Google Ads ────────────────────────────────────────────
+    goog = goog.rename(columns={"COST": "SPEND"})
+    goog["SOURCE_PLATFORM"] = "Google Ads"
+
+    # ── TikTok ────────────────────────────────────────────────
+    tt = tt.rename(columns={
+        "ADGROUP_ID": "AD_GROUP_ID",
+        "ADGROUP_NAME": "AD_GROUP_NAME",
+        "COST": "SPEND",
+    })
+    tt["SOURCE_PLATFORM"] = "TikTok"
+
+    # ── Common columns for unified view ───────────────────────
+    common = ["DATE", "SOURCE_PLATFORM", "CAMPAIGN_ID", "CAMPAIGN_NAME",
+              "AD_GROUP_ID", "AD_GROUP_NAME", "IMPRESSIONS", "CLICKS",
+              "SPEND", "CONVERSIONS"]
+
+    unified = pd.concat(
+        [fb[common], goog[common], tt[common]],
+        ignore_index=True
     )
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM unified_ads")
-    df = cur.fetch_pandas_all()
-    conn.close()
-    df["DATE"] = pd.to_datetime(df["DATE"])
+
+    unified["DATE"] = pd.to_datetime(unified["DATE"])
     for c in ["IMPRESSIONS", "CLICKS", "SPEND", "CONVERSIONS"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    return df
+        unified[c] = pd.to_numeric(unified[c], errors="coerce").fillna(0)
+
+    return unified
 
 
 df = load_data()
@@ -143,47 +166,30 @@ camp = filtered.groupby(["SOURCE_PLATFORM", "CAMPAIGN_NAME"], as_index=False).ag
 )
 camp["ctr"] = camp.apply(
     lambda r: 100 * r["total_clicks"] / r["total_impressions"]
-    if r["total_impressions"]
-    else 0,
-    axis=1,
+    if r["total_impressions"] else 0, axis=1,
 )
 camp["cpc"] = camp.apply(
     lambda r: r["total_spend"] / r["total_clicks"] if r["total_clicks"] else 0, axis=1
 )
 camp["conversion_rate"] = camp.apply(
     lambda r: 100 * r["total_conversions"] / r["total_clicks"]
-    if r["total_clicks"]
-    else 0,
-    axis=1,
+    if r["total_clicks"] else 0, axis=1,
 )
 camp = camp.sort_values("total_spend", ascending=False).reset_index(drop=True)
 
-display_camp = camp.rename(
-    columns={
-        "SOURCE_PLATFORM": "Platform",
-        "CAMPAIGN_NAME": "Campaign",
-        "total_spend": "Total Spend",
-        "total_impressions": "Impressions",
-        "total_clicks": "Clicks",
-        "total_conversions": "Conversions",
-        "ctr": "CTR (%)",
-        "cpc": "CPC ($)",
-        "conversion_rate": "Conv. Rate (%)",
-    }
-)
+display_camp = camp.rename(columns={
+    "SOURCE_PLATFORM": "Platform", "CAMPAIGN_NAME": "Campaign",
+    "total_spend": "Total Spend", "total_impressions": "Impressions",
+    "total_clicks": "Clicks", "total_conversions": "Conversions",
+    "ctr": "CTR (%)", "cpc": "CPC ($)", "conversion_rate": "Conv. Rate (%)",
+})
 display_camp["Total Spend"] = display_camp["Total Spend"].apply(lambda x: f"${x:,.2f}")
-display_camp["Impressions"] = display_camp["Impressions"].apply(
-    lambda x: f"{x:,.0f}"
-)
+display_camp["Impressions"] = display_camp["Impressions"].apply(lambda x: f"{x:,.0f}")
 display_camp["Clicks"] = display_camp["Clicks"].apply(lambda x: f"{x:,.0f}")
-display_camp["Conversions"] = display_camp["Conversions"].apply(
-    lambda x: f"{x:,.0f}"
-)
+display_camp["Conversions"] = display_camp["Conversions"].apply(lambda x: f"{x:,.0f}")
 display_camp["CTR (%)"] = display_camp["CTR (%)"].apply(lambda x: f"{x:.2f}%")
 display_camp["CPC ($)"] = display_camp["CPC ($)"].apply(lambda x: f"${x:.2f}")
-display_camp["Conv. Rate (%)"] = display_camp["Conv. Rate (%)"].apply(
-    lambda x: f"{x:.2f}%"
-)
+display_camp["Conv. Rate (%)"] = display_camp["Conv. Rate (%)"].apply(lambda x: f"{x:.2f}%")
 st.dataframe(display_camp, use_container_width=True)
 
 st.divider()
@@ -198,9 +204,7 @@ st.altair_chart(
         x=alt.X("cpc:Q", title="Cost per Click ($)"),
         y=alt.Y("conversion_rate:Q", title="Conversion Rate (%)"),
         color=alt.Color("SOURCE_PLATFORM:N", scale=color_scale, title="Platform"),
-        size=alt.Size(
-            "total_spend:Q", title="Total Spend", scale=alt.Scale(range=[50, 500])
-        ),
+        size=alt.Size("total_spend:Q", title="Total Spend", scale=alt.Scale(range=[50, 500])),
         tooltip=[
             alt.Tooltip("CAMPAIGN_NAME:N", title="Campaign"),
             alt.Tooltip("SOURCE_PLATFORM:N", title="Platform"),
